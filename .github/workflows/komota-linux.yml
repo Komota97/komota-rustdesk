@@ -1,0 +1,247 @@
+# Build the Komota-branded RustDesk Linux client on GitHub-hosted runners.
+#
+# This is the counterpart of komota-windows.yml and replaces the nightly
+# systemd timer that ran on KOMOTA's own build box (LXC104). Moving here is
+# not about signing -- Linux artifacts are not signed -- it is about the two
+# platforms being one build again: same source, same branding gate, same
+# trigger, and an ephemeral runner instead of a box that accumulated
+# root-owned leftovers and needed a sudoers rule to clear them.
+#
+# Toolchain pins match komota-windows.yml and upstream RustDesk's own
+# .github/workflows/flutter-build.yml (Flutter 3.24.5, Rust 1.75,
+# vcpkg 120deac3). Action versions are pinned to the same commit SHAs
+# upstream uses, for the same reason they are there: a mutable tag in a
+# build pipeline is a supply-chain hole.
+#
+# Runner choice is deliberate: ubuntu-22.04, not ubuntu-latest. The client
+# links against the runner's glibc, so the build host sets the oldest
+# distribution the .deb will install on. The box this replaced was Debian 13
+# (glibc 2.41), which is far newer than most machines this ever lands on;
+# 22.04 (glibc 2.35) widens compatibility rather than narrowing it. Pinning
+# also means a runner-image rollover cannot silently move that floor.
+
+name: Build Komota RustDesk (Linux)
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+env:
+  RUST_VERSION: "1.75"
+  FLUTTER_VERSION: "3.24.5"
+  VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-22.04
+    # The box took ~25 minutes for this. The margin covers a cold vcpkg cache
+    # and the build.py retries below without ever reaching GitHub's hard
+    # 6h-per-job ceiling.
+    timeout-minutes: 180
+    steps:
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      # The runner ships ~14 GB free on /, and a full vcpkg + cargo + flutter
+      # build does not fit comfortably. Upstream frees the same three trees.
+      - name: Maximize build space
+        run: |
+          sudo rm -rf /opt/ghc /usr/local/lib/android /usr/share/dotnet
+          df -h /
+
+      # Upstream adds 12 GB of swap for this exact build; rustc/LLVM linking
+      # the flutter target is the peak. Done with plain shell rather than a
+      # third-party action, on the same "one less unpinned dependency"
+      # principle as the SHA pins above. /mnt is the runner's large temp disk,
+      # so this does not eat the space freed just above.
+      - name: Add swap
+        run: |
+          sudo fallocate -l 8G /mnt/komota-swapfile
+          sudo chmod 600 /mnt/komota-swapfile
+          sudo mkswap /mnt/komota-swapfile
+          sudo swapon /mnt/komota-swapfile
+          free -m
+
+      - name: Checkout source code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
+
+      # The branding must already be committed on this branch. Fail loudly
+      # rather than silently shipping an unbranded client that still points at
+      # the public rustdesk.com relay. Same four checks as the Windows
+      # workflow and as resources/branding/apply-branding.sh -- if one of them
+      # changes, all three change.
+      - name: Verify Komota branding is present
+        run: |
+          cfg=libs/hbb_common/src/config.rs
+          grep -q 'rustdesk\.komota\.lt' "$cfg" || { echo "Relay not set to rustdesk.komota.lt -- branding missing"; exit 1; }
+          grep -q '"Komota RustDesk"' "$cfg" || { echo "APP_NAME not set to 'Komota RustDesk' -- branding missing"; exit 1; }
+          grep -q 'disable-installation' "$cfg" || { echo "disable-installation missing -- client would offer to install itself"; exit 1; }
+          # Upstream's .gitignore has a bare `*png`, which once silently
+          # dropped both logos from the branded commit. Nothing else catches
+          # it: pubspec.yaml lists the assets *directory*, and common.dart
+          # falls back gracefully, so the build would succeed and ship
+          # unbranded.
+          for logo in flutter/assets/logo_light.png flutter/assets/logo_dark.png; do
+            [ -f "$logo" ] || { echo "$logo missing -- client would ship without Komota branding"; exit 1; }
+          done
+          echo "Branding verified"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            build-essential \
+            clang \
+            cmake \
+            curl \
+            g++ \
+            gcc \
+            git \
+            libarchive-tools \
+            libasound2-dev \
+            libayatana-appindicator3-dev \
+            libclang-dev \
+            libfuse2 \
+            libgstreamer-plugins-base1.0-dev \
+            libgstreamer1.0-dev \
+            libgtk-3-dev \
+            libpam0g-dev \
+            libpulse-dev \
+            libssl-dev \
+            libva-dev \
+            libxcb-randr0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxdo-dev \
+            libxfixes-dev \
+            llvm-dev \
+            nasm \
+            ninja-build \
+            pkg-config \
+            python3 \
+            unzip \
+            wget \
+            xz-utils
+          # opus is built by vcpkg; a system libopus-dev shadows it and the
+          # two disagree. Upstream removes it for the same reason.
+          sudo apt-get remove -y libopus-dev || true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-unknown-linux-gnu
+          # rustfmt is NOT optional: flutter_rust_bridge_codegen shells out to
+          # it to format the generated bridge and dies without it. This action
+          # installs a minimal profile, so it has to be asked for explicitly.
+          components: rustfmt
+
+      # The codegen tooling needs a newer rustc than the pinned build
+      # toolchain, so `stable` is installed purely to cargo-install the tools
+      # with `+stable`. The build itself still uses the pinned version.
+      - name: Install stable toolchain for codegen tooling
+        run: rustup toolchain install stable --profile minimal
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: komota-linux
+
+      - name: Install flutter
+        uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225 # v2.12.0
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Setup vcpkg with GitHub Actions binary cache
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
+        run: |
+          if ! $VCPKG_ROOT/vcpkg install --triplet x64-linux --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r f; do echo "$f:"; echo "======"; cat "$f"; echo; done
+            exit 1
+          fi
+
+      - name: Generate FFI bridge
+        run: |
+          # ffigen needs .dart_tool/package_config.json, which only exists
+          # after `flutter pub get` -- a fresh checkout does not have it.
+          pushd flutter && flutter pub get && popd
+          # cargo-expand is required by the codegen; omitting it fails late.
+          cargo +stable install cargo-expand --version 1.0.79 --locked
+          cargo +stable install flutter_rust_bridge_codegen --version 1.80.1 --features "uuid" --locked
+          ~/.cargo/bin/flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs \
+            --dart-output ./flutter/lib/generated_bridge.dart \
+            --c-output ./flutter/macos/Runner/bridge_generated.h
+
+      - name: Build rustdesk
+        run: |
+          # rustc/LLVM has hit a transient SIGSEGV under this workload
+          # (different crates each time, not obviously memory-pressure
+          # related); a plain retry resolved it both times. Kept from the
+          # build box's script -- the failure is in the toolchain under this
+          # build, not in the box it ran on.
+          ok=0
+          for attempt in 1 2 3; do
+            if python3 build.py --flutter --hwcodec; then ok=1; break; fi
+            echo "==> build.py attempt $attempt failed, retrying..." >&2
+          done
+          [ "$ok" -eq 1 ] || { echo "ERROR: build.py failed 3 times in a row" >&2; exit 1; }
+
+      # The version comes from what was actually built, not from a variable
+      # that could disagree with it.
+      - name: Package .deb
+        run: |
+          deb=$(ls rustdesk-*.deb | head -1)
+          [ -n "$deb" ] || { echo "ERROR: no .deb produced" >&2; exit 1; }
+          version=$(basename "$deb" | sed -E 's/rustdesk-(.*)\.deb/\1/')
+          stamp=$(date -u +%Y%m%d-%H%M%S)
+          echo "KOMOTA_VERSION=$version" >> "$GITHUB_ENV"
+          echo "KOMOTA_STAMP=$stamp" >> "$GITHUB_ENV"
+          mkdir -p out
+          cp "$deb" "out/komota-rustdesk-${version}-linux-x64-${stamp}.deb"
+          # appimage-builder repackages the .deb, and its recipe expects it
+          # under this exact name.
+          cp "$deb" appimage/rustdesk.deb
+
+      # Unlike Windows, the Linux artifact names keep the build stamp: this
+      # file is machine-facing, moved around by a pipeline, not a filename a
+      # customer reads off their desktop. See docs/decisions.md in KOMOTA's
+      # private build repo.
+      - name: Build portable AppImage
+        run: |
+          # https://github.com/AppImage/AppImageKit/issues/1395
+          sudo pip3 install "setuptools_scm<10"
+          sudo pip3 install git+https://github.com/rustdesk-org/appimage-builder.git
+          pushd appimage
+          sudo appimage-builder --skip-tests --recipe ./AppImageBuilder-x86_64.yml
+          popd
+          appimage=$(ls appimage/rustdesk-*.AppImage | head -1)
+          [ -n "$appimage" ] || { echo "ERROR: no .AppImage produced" >&2; exit 1; }
+          dest="out/Komota-RustDesk-${KOMOTA_VERSION}-x86_64-${KOMOTA_STAMP}.AppImage"
+          # appimage-builder runs as root, so the file it wrote is root-owned;
+          # the copy is a new file the runner user creates itself.
+          sudo cp "$appimage" "$dest"
+          sudo chown "$(id -u):$(id -g)" "$dest"
+          chmod +x "$dest"
+          ls -lh out/
+
+      # Retention is GitHub's now, not a pruning loop in a build script: the
+      # box kept two versions because its disk was finite and nothing else
+      # cleaned up. Artifacts here expire on their own.
+      - name: Upload artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: komota-rustdesk-linux-x64
+          path: out/
+          retention-days: 90

@@ -1,0 +1,93 @@
+# Tell someone when upstream RustDesk publishes a release newer than the one
+# this fork is branded from.
+#
+# The build box used to do this implicitly: it checked upstream every night
+# and built when the release version changed. That check could not move into
+# the build workflow, because a build here needs *branded source committed to
+# this repository* -- and producing that is a deliberate human step
+# (make-branded-branch.sh in KOMOTA's private build repo). So the trigger and
+# the notice are now two different things: the build runs when branded source
+# is pushed, and this job exists so that a new upstream release is still
+# noticed by something other than memory.
+#
+# It reports by failing. That is the whole mechanism: GitHub emails the
+# repository owner when a scheduled workflow fails, so no mail credential has
+# to live anywhere. A green run means nothing to do.
+#
+# Caveat worth knowing: GitHub disables scheduled workflows after 60 days
+# without repository activity, and its own runs do not count as activity. It
+# emails the owner when it does that, so the failure mode is loud rather than
+# silent -- but a quiet repo will eventually need this re-enabled by hand.
+
+name: Watch upstream RustDesk releases
+
+on:
+  schedule:
+    # Weekly. Upstream cuts releases on the order of months; a nightly check
+    # would be noise, and a missed week costs nothing.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: false
+
+      - name: Compare this fork's base release against upstream's newest
+        run: |
+          set -euo pipefail
+          # What this branch is branded from. Cargo.toml's version is
+          # upstream's own release number and is not touched by the branding.
+          ours=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/') || true
+          [ -n "$ours" ] || { echo "ERROR: could not read the version from Cargo.toml" >&2; exit 1; }
+
+          # Upstream tags releases as bare semver ("1.4.9"), alongside
+          # non-release tags ("nightly", "fdroid-version") that must not be
+          # mistaken for one. Same rule the build box used.
+          latest=$(
+            git ls-remote --tags --refs https://github.com/rustdesk/rustdesk \
+              | awk '{print $2}' \
+              | sed 's#^refs/tags/##' \
+              | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sort -V \
+              | tail -1
+          ) || true
+          [ -n "$latest" ] || { echo "ERROR: could not determine upstream's latest release tag" >&2; exit 1; }
+
+          echo "This fork is branded from: $ours"
+          echo "Upstream's newest release:  $latest"
+
+          if [ "$ours" = "$latest" ]; then
+            echo "Up to date -- nothing to do."
+            exit 0
+          fi
+
+          if [ "$(printf '%s\n%s\n' "$ours" "$latest" | sort -V | tail -1)" = "$ours" ]; then
+            # Upstream's newest release is older than ours: a retracted or
+            # deleted tag. Never treat that as "nothing to do".
+            echo "ERROR: upstream's newest release ($latest) is older than this fork's base ($ours) -- a tag was retracted or deleted; look at it." >&2
+            exit 1
+          fi
+
+          cat >&2 <<EOF
+
+          Upstream RustDesk $latest is out; this fork is still on $ours.
+
+          Nothing is broken and nothing built the wrong thing -- this job
+          exists only to say so. To move:
+
+            1. In KOMOTA's private build repo, rebase the branding patches
+               onto $latest if upstream touched the lines they patch.
+            2. Run resources/branding/make-branded-branch.sh $latest.
+            3. Push the resulting komota/$latest branch here, make it the
+               default branch, and run both build workflows.
+
+          EOF
+          exit 1
