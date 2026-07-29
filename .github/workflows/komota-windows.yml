@@ -105,6 +105,18 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
           targets: x86_64-pc-windows-msvc
+          # rustfmt is NOT optional: flutter_rust_bridge_codegen shells out to it
+          # to format the generated bridge and dies without it. provision-vm.ps1
+          # got it for free because rustup-init installs the default profile;
+          # this action installs a minimal one. Upstream's bridge.yml does the
+          # same thing for the same reason.
+          components: rustfmt
+
+      # The codegen tooling needs a newer rustc than the pinned build toolchain.
+      # provision-vm.ps1 installs `stable` purely for this and cargo-installs the
+      # tools with `+stable`; mirrored here so the two builders stay identical.
+      - name: Install stable toolchain for codegen tooling
+        run: rustup toolchain install stable --profile minimal
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
@@ -135,7 +147,10 @@ jobs:
           # ffigen needs .dart_tool/package_config.json, which only exists after
           # `flutter pub get` -- a fresh checkout does not have it.
           pushd flutter && flutter pub get && popd
-          cargo install flutter_rust_bridge_codegen --version 1.80.1 --features "uuid" --locked
+          # Versions and the `+stable` pin match provision-vm.ps1 exactly.
+          # cargo-expand is required by the codegen and was missing here.
+          cargo +stable install cargo-expand --version 1.0.79 --locked
+          cargo +stable install flutter_rust_bridge_codegen --version 1.80.1 --features "uuid" --locked
           ~/.cargo/bin/flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs \
             --dart-output ./flutter/lib/generated_bridge.dart \
             --c-output ./flutter/macos/Runner/bridge_generated.h
