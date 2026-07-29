@@ -5,14 +5,21 @@
 # job leading to the signing request must run on a GitHub-hosted agent --
 # self-hosted builders are explicitly not permitted, because origin metadata
 # has to come from GitHub rather than from a build script that could forge it.
-# So VM105 cannot produce a Foundation-signed release, no matter how well it
-# builds.
+# A self-hosted build box therefore cannot produce a Foundation-signed
+# release, no matter how well it builds.
 #
-# The build steps mirror windows-builder/build-vm.ps1 in the private komota
-# repo, and the toolchain pins are upstream RustDesk's own
-# (.github/workflows/flutter-build.yml) -- FLUTTER 3.24.5, Rust 1.75,
-# vcpkg 120deac3. Those were already identical; provision-vm.ps1 was derived
-# from that workflow in the first place.
+# The Foundation application was declined on 2026-07-29, so that requirement
+# no longer binds -- but nothing here changes. The build box it replaced was
+# destroyed the same day, Actions is proven, and a paid subscription (the only
+# remaining route to a signature) uses this same action anyway. The signing
+# step below stays inert until SIGNPATH_ORGANIZATION_ID is set.
+#
+# This is now the only implementation. It began as a port of a Proxmox VM
+# builder (retired 2026-07-29, see docs/history in KOMOTA's private repo), but
+# the toolchain pins are upstream RustDesk's own
+# (.github/workflows/flutter-build.yml) -- Flutter 3.24.5, Rust 1.75,
+# vcpkg 120deac3 -- because the VM builder was itself derived from that
+# workflow. The comments below record why each non-obvious step exists.
 #
 # Action versions are pinned to the same commit SHAs upstream uses. Pinning by
 # SHA rather than tag matters more here than usual: a signing pipeline that
@@ -94,7 +101,7 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
 
       # RustDesk ships its own engine build; the stock one produces a client
-      # that misbehaves. Same substitution provision-vm.ps1 does.
+      # that misbehaves, so the stock engine is swapped out here.
       - name: Replace engine with rustdesk custom flutter engine
         shell: pwsh
         run: |
@@ -110,15 +117,15 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           targets: x86_64-pc-windows-msvc
           # rustfmt is NOT optional: flutter_rust_bridge_codegen shells out to it
-          # to format the generated bridge and dies without it. provision-vm.ps1
-          # got it for free because rustup-init installs the default profile;
-          # this action installs a minimal one. Upstream's bridge.yml does the
-          # same thing for the same reason.
+          # to format the generated bridge and dies without it. rustup-init
+          # installs the default profile and gets it for free; this action
+          # installs a minimal one. Upstream's bridge.yml sets it for the same
+          # reason.
           components: rustfmt
 
-      # The codegen tooling needs a newer rustc than the pinned build toolchain.
-      # provision-vm.ps1 installs `stable` purely for this and cargo-installs the
-      # tools with `+stable`; mirrored here so the two builders stay identical.
+      # The codegen tooling needs a newer rustc than the pinned build
+      # toolchain, so `stable` is installed purely to cargo-install the tools
+      # with `+stable`. The build itself still uses the pinned version.
       - name: Install stable toolchain for codegen tooling
         run: rustup toolchain install stable --profile minimal
 
@@ -151,8 +158,7 @@ jobs:
           # ffigen needs .dart_tool/package_config.json, which only exists after
           # `flutter pub get` -- a fresh checkout does not have it.
           pushd flutter && flutter pub get && popd
-          # Versions and the `+stable` pin match provision-vm.ps1 exactly.
-          # cargo-expand is required by the codegen and was missing here.
+          # cargo-expand is required by the codegen; omitting it fails late.
           cargo +stable install cargo-expand --version 1.0.79 --locked
           cargo +stable install flutter_rust_bridge_codegen --version 1.80.1 --features "uuid" --locked
           ~/.cargo/bin/flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs \
@@ -177,7 +183,7 @@ jobs:
           # generate.py lives in libs/portable and must be run from there; it
           # also needs brotli, which is not on the runner's Python. It invokes
           # `cargo build --locked --release` itself to produce
-          # target/release/rustdesk-portable-packer.exe. Mirrors build-vm.ps1.
+          # target/release/rustdesk-portable-packer.exe.
           $root = (Get-Location).Path
           $rustdeskDir = Join-Path $root 'rustdesk'
           Push-Location libs/portable
@@ -190,8 +196,8 @@ jobs:
           $packer = Join-Path $root 'target\release\rustdesk-portable-packer.exe'
           if (-not (Test-Path $packer)) { throw "portable packer was not produced at $packer" }
 
-          # Same naming as the private builder: human-facing, no build stamp.
-          # See docs/decisions.md -> "Windows artifact naming" in the komota repo.
+          # Named for a human rather than a machine: spaces, no build stamp,
+          # because this file lives on a customer's desktop.
           New-Item -ItemType Directory out -Force | Out-Null
           Copy-Item $packer "out/Komota RustDesk $env:VERSION x86_64.exe"
           Copy-Item -Recurse ./rustdesk out/rustdesk
