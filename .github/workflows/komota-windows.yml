@@ -206,14 +206,18 @@ jobs:
       # SignPath Foundation requires manual approval per release, so this waits
       # on a human by design. Only runs when explicitly asked for.
       #
-      # TODO before first use: pin this to a commit SHA like every other action
-      # here. Left as a floating ref only because the current release SHA has
-      # not been verified -- do not run a signing pipeline against a mutable
-      # tag.
+      # Pinned to the v2 tag's commit SHA, like every other action here: a
+      # signing pipeline that resolves a mutable tag is a supply-chain hole.
+      # Note this is v2, not v1 -- v2 additionally requires `connector-url`,
+      # which SignPath provides when the project is set up.
       - name: Submit signing request to SignPath
-        if: ${{ inputs.sign || startsWith(github.ref, 'refs/tags/v') }}
-        uses: signpath/github-action-submit-signing-request@v1
+        # Also requires SignPath to actually be configured. Without this a tag
+        # push would trigger signing against secrets that do not exist and fail
+        # a build that was otherwise fine.
+        if: ${{ (inputs.sign || startsWith(github.ref, 'refs/tags/v')) && vars.SIGNPATH_ORGANIZATION_ID != '' }}
+        uses: signpath/github-action-submit-signing-request@b9d91eadd323de506c0c81cf0c7fe7438f3360fd # v2.2
         with:
+          connector-url: ${{ vars.SIGNPATH_CONNECTOR_URL }}
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
           project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
@@ -224,7 +228,7 @@ jobs:
           output-artifact-directory: signed
 
       - name: Upload signed artifacts
-        if: ${{ inputs.sign || startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ (inputs.sign || startsWith(github.ref, 'refs/tags/v')) && vars.SIGNPATH_ORGANIZATION_ID != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: komota-rustdesk-windows-x64-signed
