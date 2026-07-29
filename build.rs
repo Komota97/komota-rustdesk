@@ -1,14 +1,30 @@
-#[cfg(windows)]
 fn build_windows() {
     let file = "src/platform/windows.cc";
     let file2 = "src/platform/windows_delete_test_cert.cc";
-    cc::Build::new().file(file).file(file2).compile("windows");
+    let mut build = cc::Build::new();
+    build.file(file).file(file2);
+    // Komota: needed when cross-compiling via mingw-w64's GCC (never triggers on
+    // the officially-supported native MSVC build). Some of mingw's WTS API surface
+    // used in this file is version-gated; see the WTSSessionInfoEx compat shim
+    // added directly in windows.cc for the parts mingw's headers omit entirely.
+    build.define("_WIN32_WINNT", "0x0601");
+    build.define("WINVER", "0x0601");
+    if !build.get_compiler().is_like_msvc() {
+        // GCC/mingw only: this file has a couple of `goto` jumps that skip past a
+        // variable's initializer, which MSVC's cl.exe tolerates but GCC rejects
+        // under strict conformance. -fpermissive downgrades it to a warning.
+        build.flag("-fpermissive");
+        // windows_delete_test_cert.cc brace-initializes a `char` array with byte
+        // values >127 (fine as data, but GCC's C++11 list-init narrowing check
+        // treats it as an error; MSVC doesn't enforce this the same way here).
+        build.flag("-Wno-narrowing");
+    }
+    build.compile("windows");
     println!("cargo:rustc-link-lib=WtsApi32");
     println!("cargo:rerun-if-changed={}", file);
     println!("cargo:rerun-if-changed={}", file2);
 }
 
-#[cfg(target_os = "macos")]
 fn build_mac() {
     let file = "src/platform/macos.mm";
     let mut b = cc::Build::new();
@@ -22,7 +38,7 @@ fn build_mac() {
     println!("cargo:rerun-if-changed={}", file);
 }
 
-#[cfg(all(windows, feature = "inline"))]
+#[cfg(feature = "inline")]
 fn build_manifest() {
     use std::io::Write;
     if std::env::var("PROFILE").unwrap() == "release" {
@@ -80,13 +96,18 @@ fn install_android_deps() {
 fn main() {
     hbb_common::gen_version();
     install_android_deps();
-    #[cfg(all(windows, feature = "inline"))]
-    build_manifest();
-    #[cfg(windows)]
-    build_windows();
+    // NOTE (Komota): `#[cfg(windows)]`/`#[cfg(target_os = "macos")]` on the call sites
+    // below would reflect the HOST running this build script (since build scripts
+    // always compile for the host), not the actual compilation TARGET -- breaking
+    // cross-compilation from a non-Windows/non-macOS host. Use CARGO_CFG_TARGET_OS
+    // (already used correctly elsewhere in this file) instead.
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
+    if target_os == "windows" {
+        #[cfg(feature = "inline")]
+        build_manifest();
+        build_windows();
+    }
     if target_os == "macos" {
-        #[cfg(target_os = "macos")]
         build_mac();
         println!("cargo:rustc-link-lib=framework=ApplicationServices");
     }

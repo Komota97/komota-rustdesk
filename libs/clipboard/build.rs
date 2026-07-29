@@ -1,4 +1,3 @@
-#[cfg(target_os = "windows")]
 fn build_c_impl() {
     let mut build = cc::Build::new();
 
@@ -30,6 +29,12 @@ fn build_c_impl() {
 }
 
 fn main() {
-    #[cfg(target_os = "windows")]
-    build_c_impl();
+    // Komota: `#[cfg(target_os = "windows")]` here would reflect the HOST running
+    // this build script (build scripts always compile for the host), not the
+    // actual target, breaking cross-compilation from a non-Windows host. Use
+    // CARGO_CFG_TARGET_OS instead (same fix applied to scrap's and the root
+    // crate's build.rs for the identical bug).
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        build_c_impl();
+    }
 }

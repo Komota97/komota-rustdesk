@@ -3744,12 +3744,16 @@ Widget loadPowered(BuildContext context) {
     cursor: SystemMouseCursors.click,
     child: GestureDetector(
       onTap: () {
-        launchUrl(Uri.parse('https://rustdesk.com'));
+        launchUrl(Uri.parse('https://komota.lt/pagalba'));
       },
       child: Opacity(
           opacity: 0.5,
           child: Text(
-            translate("powered_by_me"),
+            // Komota: URL, not translated -- same convention as brand/technical
+            // tokens (RustDesk, TLS, ...). Displayed with "www." for recognizability
+            // to a non-technical audience; the link itself uses the canonical
+            // no-www host to skip a redirect hop.
+            "www.komota.lt/pagalba",
             overflow: TextOverflow.clip,
             style: Theme.of(context)
                 .textTheme

@@ -4,6 +4,15 @@ rustflags = ["-Ctarget-feature=+crt-static"]
 rustflags = ["-C", "target-feature=+crt-static", "-C", "link-args=/NODEFAULTLIB:MSVCRT"]
 [target.aarch64-pc-windows-msvc]
 rustflags = ["-Ctarget-feature=+crt-static"]
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+ar = "x86_64-w64-mingw32-ar"
+# NOTE: mingw-w64 ships `libnewdev.a` lowercase (case-sensitive filesystem breaks the
+# `-lNewdev` request), and doesn't ship `sas.dll`'s import lib (SendSAS, used for
+# Ctrl+Alt+Del) at all. Point WIN_EXTRA_LIBS at a directory holding a case-fixed
+# copy of the former and a dlltool-generated stub for the latter.
+# Unused by the shipped MSVC build; only needed if cross-building the gnu target.
+rustflags = ["-Ctarget-feature=+crt-static"]
 [target.'cfg(target_os="macos")']
 rustflags = [
     "-C", "link-args=-sectcreate __CGPreLoginApp __cgpreloginapp /dev/null",

@@ -1,0 +1,216 @@
+# Build the Komota-branded RustDesk Windows client on GitHub-hosted runners.
+#
+# This exists because of SignPath Foundation, not preference. Foundation
+# signing requires a trusted build system, and for open-source projects every
+# job leading to the signing request must run on a GitHub-hosted agent --
+# self-hosted builders are explicitly not permitted, because origin metadata
+# has to come from GitHub rather than from a build script that could forge it.
+# So VM105 cannot produce a Foundation-signed release, no matter how well it
+# builds.
+#
+# The build steps mirror windows-builder/build-vm.ps1 in the private komota
+# repo, and the toolchain pins are upstream RustDesk's own
+# (.github/workflows/flutter-build.yml) -- FLUTTER 3.24.5, Rust 1.75,
+# vcpkg 120deac3. Those were already identical; provision-vm.ps1 was derived
+# from that workflow in the first place.
+#
+# Action versions are pinned to the same commit SHAs upstream uses. Pinning by
+# SHA rather than tag matters more here than usual: a signing pipeline that
+# resolves a mutable tag is a supply-chain hole.
+
+name: Build Komota RustDesk (Windows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      sign:
+        description: 'Submit to SignPath for signing'
+        type: boolean
+        default: false
+  push:
+    tags: ['v*']
+
+env:
+  RUST_VERSION: "1.75"
+  LLVM_VERSION: "15.0.6"
+  FLUTTER_VERSION: "3.24.5"
+  VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  VERSION: "1.4.9"
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    steps:
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Checkout source code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
+
+      # The branding must already be committed on this branch. Fail loudly
+      # rather than silently shipping an unbranded client that still points at
+      # the public rustdesk.com relay.
+      - name: Verify Komota branding is present
+        shell: pwsh
+        run: |
+          $cfg = 'libs/hbb_common/src/config.rs'
+          if (-not (Select-String -Path $cfg -Pattern 'rustdesk\.komota\.lt' -Quiet)) {
+            throw "Relay not set to rustdesk.komota.lt -- branding missing"
+          }
+          if (-not (Select-String -Path $cfg -Pattern '"Komota RustDesk"' -Quiet)) {
+            throw "APP_NAME not set to 'Komota RustDesk' -- branding missing"
+          }
+          if (-not (Select-String -Path $cfg -Pattern 'disable-installation' -Quiet)) {
+            throw "disable-installation missing -- portable client would offer to install itself"
+          }
+          # Upstream's .gitignore has a bare `*png`, which once silently dropped
+          # both logos from the branded commit. Nothing else catches it:
+          # pubspec.yaml lists the assets *directory*, and common.dart falls
+          # back gracefully, so the build would succeed and ship unbranded.
+          foreach ($logo in 'flutter/assets/logo_light.png','flutter/assets/logo_dark.png') {
+            if (-not (Test-Path $logo)) { throw "$logo missing -- client would ship without Komota branding" }
+          }
+          Write-Host "Branding verified"
+
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - name: Install flutter
+        uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225 # v2.12.0
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      # RustDesk ships its own engine build; the stock one produces a client
+      # that misbehaves. Same substitution provision-vm.ps1 does.
+      - name: Replace engine with rustdesk custom flutter engine
+        shell: pwsh
+        run: |
+          flutter doctor -v
+          flutter precache --windows
+          Invoke-WebRequest -Uri https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile windows-x64-release.zip
+          Expand-Archive -Path windows-x64-release.zip -DestinationPath windows-x64-release
+          mv -Force windows-x64-release/* "$env:FLUTTER_ROOT/bin/cache/artifacts/engine/windows-x64-release/"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: komota-windows
+
+      - name: Setup vcpkg with GitHub Actions binary cache
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
+        shell: bash
+        env:
+          # vcpkg.json has "host": true dependencies, and the host triplet
+          # defaults to x64-windows (dynamic) unless told otherwise -- which
+          # mismatches the static target and breaks CRT linkage.
+          VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
+        run: |
+          if ! $VCPKG_ROOT/vcpkg install --triplet x64-windows-static --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r f; do echo "$f:"; echo "======"; cat "$f"; echo; done
+            exit 1
+          fi
+
+      - name: Generate FFI bridge
+        shell: bash
+        run: |
+          # ffigen needs .dart_tool/package_config.json, which only exists after
+          # `flutter pub get` -- a fresh checkout does not have it.
+          pushd flutter && flutter pub get && popd
+          cargo install flutter_rust_bridge_codegen --version 1.80.1 --features "uuid" --locked
+          ~/.cargo/bin/flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs \
+            --dart-output ./flutter/lib/generated_bridge.dart \
+            --c-output ./flutter/macos/Runner/bridge_generated.h
+
+      - name: Build rustdesk
+        shell: pwsh
+        run: |
+          python3 .\build.py --portable --flutter --hwcodec --vram --skip-portable-pack
+          mv ./flutter/build/windows/x64/runner/Release ./rustdesk
+
+          Invoke-WebRequest -Uri https://github.com/rustdesk-org/rdev/releases/download/usbmmidd_v2/usbmmidd_v2.zip -OutFile usbmmidd_v2.zip
+          Expand-Archive usbmmidd_v2.zip -DestinationPath .
+          Remove-Item -Path usbmmidd_v2\Win32 -Recurse -ErrorAction SilentlyContinue
+          Remove-Item -Path "usbmmidd_v2\deviceinstaller64.exe","usbmmidd_v2\deviceinstaller.exe","usbmmidd_v2\usbmmidd.bat" -ErrorAction SilentlyContinue
+          mv -Force .\usbmmidd_v2 ./rustdesk
+
+      - name: Package portable executable
+        shell: pwsh
+        run: |
+          # generate.py lives in libs/portable and must be run from there; it
+          # also needs brotli, which is not on the runner's Python. It invokes
+          # `cargo build --locked --release` itself to produce
+          # target/release/rustdesk-portable-packer.exe. Mirrors build-vm.ps1.
+          $root = (Get-Location).Path
+          $rustdeskDir = Join-Path $root 'rustdesk'
+          Push-Location libs/portable
+          pip3 install -r requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw "pip3 install failed" }
+          python3 .\generate.py -f "$rustdeskDir" -o . -e "$rustdeskDir\rustdesk.exe"
+          if ($LASTEXITCODE -ne 0) { throw "generate.py failed" }
+          Pop-Location
+
+          $packer = Join-Path $root 'target\release\rustdesk-portable-packer.exe'
+          if (-not (Test-Path $packer)) { throw "portable packer was not produced at $packer" }
+
+          # Same naming as the private builder: human-facing, no build stamp.
+          # See docs/decisions.md -> "Windows artifact naming" in the komota repo.
+          New-Item -ItemType Directory out -Force | Out-Null
+          Copy-Item $packer "out/Komota RustDesk $env:VERSION x86_64.exe"
+          Copy-Item -Recurse ./rustdesk out/rustdesk
+          Compress-Archive -Path out/rustdesk -DestinationPath "out/Komota RustDesk $env:VERSION x86_64.zip"
+          Remove-Item -Recurse -Force out/rustdesk
+
+      # Upload BEFORE signing: SignPath pulls the artifact from GitHub by id,
+      # so it has to exist as an uploaded artifact first.
+      - name: Upload unsigned artifacts
+        id: upload-unsigned
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: komota-rustdesk-windows-x64-unsigned
+          path: out/
+
+      # SignPath Foundation requires manual approval per release, so this waits
+      # on a human by design. Only runs when explicitly asked for.
+      #
+      # TODO before first use: pin this to a commit SHA like every other action
+      # here. Left as a floating ref only because the current release SHA has
+      # not been verified -- do not run a signing pipeline against a mutable
+      # tag.
+      - name: Submit signing request to SignPath
+        if: ${{ inputs.sign || startsWith(github.ref, 'refs/tags/v') }}
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIG_SLUG }}
+          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Upload signed artifacts
+        if: ${{ inputs.sign || startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: komota-rustdesk-windows-x64-signed
+          path: signed/

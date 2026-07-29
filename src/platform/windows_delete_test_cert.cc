@@ -1,7 +1,13 @@
 // https://github.com/rustdesk/rustdesk/discussions/6444#discussioncomment-9010062
 
 #include <iostream>
-#include <Windows.h>
+#include <windows.h>
+// Komota: this file intentionally still uses wsprintfW (fine on real Windows --
+// MSVC only soft-deprecates it via #pragma). mingw-w64's strsafe.h instead poisons
+// it via macro substitution to a nonexistent symbol, which is a hard compile error
+// there; STRSAFE_NO_DEPRECATE is strsafe.h's own documented opt-out for exactly
+// this "yes, I mean to call these functions" case.
+#define STRSAFE_NO_DEPRECATE
 #include <strsafe.h>
 
 BOOL IsCertWdkTestCert(char* lpBlobData, DWORD cchBlobData) {

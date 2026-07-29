@@ -3,6 +3,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
     [
         ("Status", "Būsena"),
         ("Your Desktop", "Jūsų darbalaukis"),
+        ("komota_ready_tip", "Mes pasiruošę jums padėti"),
         ("desk_tip", "Jūsų darbalaukis pasiekiamas naudojant šį ID ir slaptažodį"),
         ("Password", "Slaptažodis"),
         ("Ready", "Pasiruošęs"),

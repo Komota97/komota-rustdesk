@@ -254,13 +254,18 @@ fn main() {
         // nothing
     } else if target_os == "android" {
         println!("cargo:rustc-cfg=android");
-    } else if cfg!(windows) {
+    } else if target_os == "windows" {
         // The first choice is Windows because DXGI is amazing.
         println!("cargo:rustc-cfg=dxgi");
-    } else if cfg!(target_os = "macos") {
+        // Komota: dxgi/mag.rs declares `extern "C" { pub static GUID_WICPixelFormat32bppRGBA: GUID; }`
+        // whose actual storage lives in uuid.lib on MSVC (implicitly default-linked
+        // there); mingw-w64 ships the equivalent in libuuid.a, but nothing links it
+        // explicitly here, so add it.
+        println!("cargo:rustc-link-lib=uuid");
+    } else if target_os == "macos" {
         // Quartz is second because macOS is the (annoying) exception.
         println!("cargo:rustc-cfg=quartz");
-    } else if cfg!(unix) {
+    } else {
         // On UNIX we pray that X11 (with XCB) is available.
         println!("cargo:rustc-cfg=x11");
     }

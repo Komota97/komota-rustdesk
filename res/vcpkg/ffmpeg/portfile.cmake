@@ -124,11 +124,27 @@ if(VCPKG_TARGET_IS_LINUX)
         endif()
     endif()
 elseif(VCPKG_TARGET_IS_WINDOWS)
+    # Komota overlay: the upstream port unconditionally forces the MSVC toolchain
+    # (--toolchain=msvc --cc=cl) here, which is correct for native Windows builds
+    # but breaks cross-compiling to the mingw triplet from Linux (no cl.exe/link.exe
+    # available; ffmpeg's msvc toolchain preset also hardcodes the mslink wrapper as
+    # its linker regardless of the later --cc override). For VCPKG_TARGET_IS_MINGW,
+    # skip the MSVC-specific flags and let the mingw cross-compiler options appended
+    # further below (around VCPKG_DETECTED_CMAKE_C_COMPILER) drive the build instead.
+    if(VCPKG_TARGET_IS_MINGW)
+        string(APPEND OPTIONS "\
+--target-os=mingw32 \
+--enable-gpl \
+")
+    else()
     string(APPEND OPTIONS "\
 --target-os=win32 \
 --toolchain=msvc \
 --cc=cl \
 --enable-gpl \
+")
+    endif()
+    string(APPEND OPTIONS "\
 --enable-d3d11va \
 --enable-hwaccel=h264_d3d11va \
 --enable-hwaccel=hevc_d3d11va \
@@ -147,10 +163,19 @@ elseif(VCPKG_TARGET_IS_WINDOWS)
 --enable-encoder=hevc_amf \
 --enable-encoder=h264_nvenc \
 --enable-encoder=hevc_nvenc \
+")
+        # Komota overlay: skip Intel QuickSync (libmfx/qsv) on the mingw triplet.
+        # mfx-dispatch's upstream libmfx.pc.cmake unconditionally lists Linux VAAPI
+        # libs (-lva -lva-drm -lva-x11) in its Libs, which don't exist for mingw and
+        # break ffmpeg's configure-time link check for libmfx. nvenc/amf hw encoding
+        # still work fine without qsv, so just drop this one optional codec path here.
+        if(NOT VCPKG_TARGET_IS_MINGW)
+            string(APPEND OPTIONS "\
 --enable-libmfx \
 --enable-encoder=h264_qsv \
 --enable-encoder=hevc_qsv \
 ")
+        endif()
     endif()
 
     if(VCPKG_TARGET_ARCHITECTURE STREQUAL "x86")

@@ -403,7 +403,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                 Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
-                    translate("Your Desktop"),
+                    translate("komota_ready_tip"),
                     style: Theme.of(context).textTheme.titleLarge,
                   ),
                 ),
