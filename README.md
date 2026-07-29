@@ -68,21 +68,33 @@ relay and app-name configuration.
 
 ## Code signing policy
 
-Free code signing provided by [SignPath.io](https://about.signpath.io),
-certificate by [SignPath Foundation](https://signpath.org).
+**The Windows binaries here are currently unsigned.** Windows SmartScreen will
+warn about an unknown publisher when you run them. That is expected, and the
+way to satisfy yourself about what you are running is this repository: the
+source is public and the binaries are built from it by a workflow you can
+read.
+
+Signing is not set up. An application to the [SignPath
+Foundation](https://signpath.org) free OSS programme was declined in July 2026
+— the programme looks for projects with established public visibility, and
+this fork was published the same month. Whether to sign commercially instead
+has not been decided.
+
+The build is nonetheless arranged so that signing can be switched on without
+rebuilding the pipeline, and those parts are worth knowing about either way:
 
 - **Committers and reviewers:** KOMOTA staff. Changes to this repository are
   made and reviewed by KOMOTA; the branding configuration originates from
   KOMOTA's internal build repository.
-- **Approvers:** KOMOTA staff. Every signing request is approved manually
-  before a release is signed.
-
-Windows binaries are built exclusively by
-[the GitHub Actions workflow in this repository](.github/workflows/komota-windows.yml)
-on GitHub-hosted runners, and are signed from that build's own artifact — no
-binary built elsewhere is ever submitted for signing. What gets signed is
-defined by [`.signpath/artifact-configuration.xml`](.signpath/artifact-configuration.xml),
-kept in this repository so it can be reviewed.
+- Windows binaries are built exclusively by
+  [the GitHub Actions workflow in this repository](.github/workflows/komota-windows.yml)
+  on GitHub-hosted runners. No binary built anywhere else would ever be
+  submitted for signing.
+- What *would* get signed is defined by
+  [`.signpath/artifact-configuration.xml`](.signpath/artifact-configuration.xml),
+  kept in this repository so it can be reviewed. It covers both the portable
+  `.exe` and the binaries inside the `.zip`, so a signed release would not
+  leave the zip's payload unsigned.
 
 ### Privacy
 
