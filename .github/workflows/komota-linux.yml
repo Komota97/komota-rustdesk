@@ -97,6 +97,19 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update -y
+          # The runner image preinstalls LLVM's libunwind-*-dev, which
+          # Breaks/Conflicts the plain libunwind-dev that libgstreamer1.0-dev
+          # depends on; apt then refuses the entire transaction with "held
+          # broken packages" rather than naming the culprit. Removing the LLVM
+          # variants is the documented fix (actions/runner-images#9546).
+          # Nothing here uses them -- the clang/llvm dev packages installed
+          # below come from Ubuntu's own repo. Matched by pattern rather than
+          # by version so a runner-image bump cannot reintroduce this.
+          llvm_unwind=$(dpkg-query -W -f='${db:Status-Status} ${Package}\n' 'libunwind-*-dev' 2>/dev/null | awk '$1=="installed"{print $2}') || true
+          if [ -n "$llvm_unwind" ]; then
+            echo "Removing conflicting LLVM packages: $llvm_unwind"
+            sudo apt-get purge -y $llvm_unwind
+          fi
           sudo apt-get install -y \
             build-essential \
             clang \
