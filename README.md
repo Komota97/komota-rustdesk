@@ -38,14 +38,29 @@ obvious whose software is running.
 
 ## Building
 
-Windows builds run on GitHub-hosted runners via
-[`.github/workflows/komota-windows.yml`](.github/workflows/komota-windows.yml).
-The build is fully automated from this repository's source: the workflow
-verifies the branding is present, builds with the same toolchain versions
-upstream RustDesk pins, and produces:
+Both platforms build on GitHub-hosted runners from this repository's source.
+Each workflow verifies the branding is present before it builds, and uses the
+same toolchain versions upstream RustDesk pins.
+
+[`.github/workflows/komota-windows.yml`](.github/workflows/komota-windows.yml)
+produces:
 
 - `Komota RustDesk <version> x86_64.exe` — portable, self-extracting
 - `Komota RustDesk <version> x86_64.zip` — the same build as a folder
+
+[`.github/workflows/komota-linux.yml`](.github/workflows/komota-linux.yml)
+produces, for x86_64:
+
+- `komota-rustdesk-<version>-linux-x64-<stamp>.deb`
+- `Komota-RustDesk-<version>-x86_64-<stamp>.AppImage` — portable
+
+It builds on Ubuntu 22.04 so that the artifacts do not require a newer glibc
+than the machines they are meant to run on.
+
+[`.github/workflows/komota-upstream-watch.yml`](.github/workflows/komota-upstream-watch.yml)
+does not build anything: it checks weekly whether upstream RustDesk has
+published a release newer than the one this fork is branded from, and fails
+if so, purely as a notice.
 
 The submodule `libs/hbb_common` points at
 [Komota97/hbb_common](https://github.com/Komota97/hbb_common), which carries the
