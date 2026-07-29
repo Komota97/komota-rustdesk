@@ -41,6 +41,10 @@ env:
 jobs:
   build-windows:
     runs-on: windows-2022
+    # Explicit rather than relying on the implicit 360-minute default: when
+    # signing is enabled the job spends most of its life waiting on a human
+    # approving the signing request, and the margin needs to be deliberate.
+    timeout-minutes: 350
     steps:
       - name: Export GitHub Actions cache environment variables
         uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
@@ -217,7 +221,13 @@ jobs:
         if: ${{ (inputs.sign || startsWith(github.ref, 'refs/tags/v')) && vars.SIGNPATH_ORGANIZATION_ID != '' }}
         uses: signpath/github-action-submit-signing-request@b9d91eadd323de506c0c81cf0c7fe7438f3360fd # v2.2
         with:
-          connector-url: ${{ vars.SIGNPATH_CONNECTOR_URL }}
+          # connector-url is deliberately NOT passed. It is `required: true` but
+          # carries a default (SignPath's shared public connector), and GitHub
+          # only applies an action's default when the key is ABSENT -- passing it
+          # bound to an unset variable yields '' and the action throws
+          # "Input required and not supplied: connector-url" before it does
+          # anything else. Only set this if KOMOTA ever self-hosts a connector,
+          # which the Foundation does not require.
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
           project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
@@ -225,6 +235,12 @@ jobs:
           artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIG_SLUG }}
           github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
           wait-for-completion: true
+          # Default is 600s. SignPath Foundation requires a human to approve
+          # EVERY release, so ten minutes is not a realistic window -- the step
+          # would throw and the signed-artifact upload (which implicitly requires
+          # success()) would be skipped. 5h leaves margin under GitHub's hard
+          # 6h-per-job ceiling, which no timeout setting can extend.
+          wait-for-completion-timeout-in-seconds: "18000"
           output-artifact-directory: signed
 
       - name: Upload signed artifacts

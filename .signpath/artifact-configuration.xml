@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath artifact configuration for Komota RustDesk.
+
+  Paste this into the SignPath project's artifact configuration. It is kept in
+  the repository on purpose: the configuration decides *what actually gets
+  signed*, and leaving that knowledge only in a web UI means nobody can review
+  it or notice when it drifts.
+
+  DO NOT simply accept SignPath's auto-generated configuration. Generating one
+  from a sample artifact will very likely sign only the outer .exe and never
+  recurse into the nested .zip, so anyone who extracts the zip instead of
+  running the portable executable still gets an unsigned binary and a
+  SmartScreen warning. Signing only the wrapper is the exact mistake the
+  private builder (windows-builder/build-vm.ps1) was written to avoid.
+
+  Structure notes:
+    - The outermost <zip-file> with no path attribute is the GitHub Actions
+      artifact itself. actions/upload-artifact always wraps uploads in a ZIP,
+      so the root container is always a zip-file regardless of what we upload.
+    - Inside it are the two files the build produces: the portable
+      self-extracting .exe, and the .zip holding the unpacked client.
+    - The inner .zip is descended into so the client binaries it ships are
+      signed too, not just the wrapper.
+
+  Wildcards keep this working across version bumps without edits.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+
+    <!-- The portable, self-extracting client. This is the file customers are
+         given and the one SmartScreen judges. -->
+    <pe-file path="Komota RustDesk *.exe">
+      <authenticode-sign/>
+    </pe-file>
+
+    <!-- The same build shipped as a folder. Its payload must be signed as
+         well, or extracting the zip yields unsigned binaries. -->
+    <zip-file path="Komota RustDesk *.zip">
+      <pe-file path="rustdesk/rustdesk.exe">
+        <authenticode-sign/>
+      </pe-file>
+      <pe-file path="rustdesk/librustdesk.dll">
+        <authenticode-sign/>
+      </pe-file>
+    </zip-file>
+
+  </zip-file>
+</artifact-configuration>

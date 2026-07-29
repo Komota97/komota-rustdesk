@@ -51,6 +51,35 @@ The submodule `libs/hbb_common` points at
 [Komota97/hbb_common](https://github.com/Komota97/hbb_common), which carries the
 relay and app-name configuration.
 
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io),
+certificate by [SignPath Foundation](https://signpath.org).
+
+- **Committers and reviewers:** KOMOTA staff. Changes to this repository are
+  made and reviewed by KOMOTA; the branding configuration originates from
+  KOMOTA's internal build repository.
+- **Approvers:** KOMOTA staff. Every signing request is approved manually
+  before a release is signed.
+
+Windows binaries are built exclusively by
+[the GitHub Actions workflow in this repository](.github/workflows/komota-windows.yml)
+on GitHub-hosted runners, and are signed from that build's own artifact — no
+binary built elsewhere is ever submitted for signing. What gets signed is
+defined by [`.signpath/artifact-configuration.xml`](.signpath/artifact-configuration.xml),
+kept in this repository so it can be reviewed.
+
+### Privacy
+
+This program will not transfer any information to other networked systems
+unless specifically requested by the user or the person installing or
+operating it.
+
+The client connects only to KOMOTA's own relay infrastructure
+(`rustdesk.komota.lt`) and does so only to establish remote-support sessions.
+It does not contact RustDesk's public infrastructure. See also
+[KOMOTA's site](https://www.komota.lt).
+
 ## Licence and attribution
 
 RustDesk is licensed under **AGPL-3.0**, and so is this fork. See
